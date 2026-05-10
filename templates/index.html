@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Audio Directory Inspector</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="hero">
+        <div class="hero-top">
+          <div class="hero-copy">
+            <p class="eyebrow">APU</p>
+            <h1>Audio Processor UI</h1>
+            <p class="lede">
+              Browse the remote music volume, process an album folder in place, and update metadata directly on the real files.
+            </p>
+          </div>
+          <img
+            class="hero-logo"
+            src="{{ url_for('static', filename='apu-logo.svg') }}"
+            alt="Illustrated Apu logo"
+          >
+        </div>
+      </section>
+
+      <section class="control-panel">
+        <div class="browser-panel">
+          <div class="browser-header">
+            <div>
+              <p class="results-label">Remote Volume</p>
+              <h2>Browse share folders</h2>
+            </div>
+            <button id="browser-up-button" type="button" class="button button-secondary browser-up-button">Up</button>
+          </div>
+          <p id="browser-path" class="browser-path">Loading remote share...</p>
+          <div id="browser-status" class="browser-status">Fetching folders...</div>
+          <div id="browser-list" class="browser-list"></div>
+
+          <div id="activity-panel" class="activity-panel" hidden>
+            <div class="activity-header">
+              <div>
+                <p class="results-label">Activity</p>
+                <h3 id="activity-title">Idle</h3>
+              </div>
+              <div id="activity-phase" class="activity-phase">Waiting</div>
+            </div>
+            <div class="progress-track" aria-hidden="true">
+              <div id="activity-progress-bar" class="progress-bar"></div>
+            </div>
+            <div class="activity-meta">
+              <span id="activity-message">No background work running.</span>
+              <span id="activity-count">0 / 0</span>
+            </div>
+            <div id="activity-reports" class="activity-reports" hidden></div>
+            <div id="activity-errors" class="activity-errors" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="results-panel">
+        <div class="results-header">
+          <div>
+            <p class="results-label">Results</p>
+            <h2 id="results-title">No directory analyzed yet</h2>
+          </div>
+          <div id="stats" class="stats" hidden></div>
+        </div>
+
+        <div id="bulk-editor" class="bulk-editor" hidden>
+          <div class="bulk-editor-grid">
+            <div class="bulk-editor-block">
+              <div class="bulk-editor-copy">
+                <label for="album-artist-input">Bulk edit album artist</label>
+                <p>Applies the same album artist value to every supported audio file in the currently processed remote folder.</p>
+              </div>
+              <div class="bulk-editor-controls">
+                <input
+                  id="album-artist-input"
+                  type="text"
+                  placeholder="New album artist"
+                  autocomplete="off"
+                  spellcheck="false"
+                >
+                <button id="update-album-artist-button" type="button" class="button">Update Album Artist</button>
+              </div>
+            </div>
+
+            <div class="bulk-editor-block">
+              <div class="bulk-editor-copy">
+                <label for="album-title-input">Bulk edit album title</label>
+                <p>Applies the same album title value to every supported audio file in the currently processed remote folder.</p>
+              </div>
+              <div class="bulk-editor-controls">
+                <input
+                  id="album-title-input"
+                  type="text"
+                  placeholder="New album title"
+                  autocomplete="off"
+                  spellcheck="false"
+                >
+                <button id="update-album-title-button" type="button" class="button">Update Album Title</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="status-message" class="status-message">Choose a remote folder to begin processing.</div>
+
+        <div class="table-shell">
+          <table id="results-table" hidden>
+            <thead>
+              <tr>
+                <th>Artwork</th>
+                <th>File</th>
+                <th>Title</th>
+                <th>Artist</th>
+                <th>Album Artist</th>
+                <th>Album</th>
+                <th>Disc</th>
+                <th>Genre</th>
+                <th>Track</th>
+                <th>Year</th>
+                <th>Duration</th>
+                <th>Bitrate</th>
+                <th>Sample Rate</th>
+              </tr>
+            </thead>
+            <tbody id="results-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <template id="empty-artwork-template">
+      <div class="artwork artwork-empty">No Art</div>
+    </template>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>

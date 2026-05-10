@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-labelledby="title desc">
+  <title id="title">Apu-inspired logo</title>
+  <desc id="desc">A stylized cartoon portrait with tall dark hair, warm skin tones, and a green jacket.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fff4d9"/>
+      <stop offset="100%" stop-color="#f3c77d"/>
+    </linearGradient>
+  </defs>
+  <rect width="320" height="320" rx="44" fill="url(#bg)"/>
+  <ellipse cx="160" cy="290" rx="88" ry="16" fill="#d7b06d" opacity="0.4"/>
+  <path d="M90 111c6-51 42-83 72-83 28 0 54 13 68 33 18 27 17 73 9 101-10 31-21 54-27 79h-98c-16-36-28-74-24-130Z" fill="#2d2121"/>
+  <path d="M117 248c2-28 14-49 43-49 31 0 44 19 46 49l7 28H109l8-28Z" fill="#5d8d54"/>
+  <path d="M108 121c0-51 24-86 52-86 31 0 54 37 54 89 0 59-23 102-54 102-35 0-52-50-52-105Z" fill="#f2cf8f"/>
+  <path d="M118 121c11-22 29-34 46-34 18 0 37 11 48 34-7-42-24-66-48-66-21 0-37 19-46 66Z" fill="#2d2121"/>
+  <ellipse cx="140" cy="143" rx="8" ry="10" fill="#1b1512"/>
+  <ellipse cx="182" cy="143" rx="8" ry="10" fill="#1b1512"/>
+  <ellipse cx="137" cy="140" rx="2.2" ry="2.8" fill="#fff"/>
+  <ellipse cx="179" cy="140" rx="2.2" ry="2.8" fill="#fff"/>
+  <path d="M129 123c7-8 17-12 26-11" stroke="#1b1512" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M168 112c10-1 20 3 27 11" stroke="#1b1512" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M157 146c-3 10-5 19-4 27 1 6 7 10 16 10" stroke="#aa6a4b" stroke-width="4" stroke-linecap="round" fill="none"/>
+  <path d="M134 177c8 10 17 14 27 14 11 0 20-4 29-14" stroke="#7b3c2d" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M144 205c8 6 24 6 33 0l2 43h-36l1-43Z" fill="#f0c888"/>
+  <path d="M115 248c16-11 31-17 47-17s32 6 45 17l-13 44h-71l-8-44Z" fill="#76a76a"/>
+  <path d="M155 232h12v60h-12z" fill="#b9d2b2" opacity="0.8"/>
+  <path d="M94 117c4 58 12 91 18 111-21-17-34-47-34-84 0-33 9-62 15-81 3 9 4 32 1 54Z" fill="#2d2121"/>
+  <path d="M225 116c-4 59-12 93-18 113 23-14 35-47 35-86 0-34-9-63-17-83-3 11-4 35 0 56Z" fill="#2d2121"/>
+</svg>
