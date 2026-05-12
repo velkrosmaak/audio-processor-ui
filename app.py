@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 import requests
+import config
 
 from flask import Flask, jsonify, render_template, request
 from mutagen import File as MutagenFile
@@ -21,8 +22,8 @@ from mutagen.oggvorbis import OggVorbis
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 512
 app.logger.setLevel(logging.DEBUG)
-REMOTE_SHARE_ROOT = Path("/Volumes/Media/downloads/complete/lidarr-music/")
-LIBRARY_SHARE_ROOT = Path("/Volumes/Media/music")
+REMOTE_SHARE_ROOT = Path(config.REMOTE_SHARE_ROOT)
+LIBRARY_SHARE_ROOT = Path(config.LIBRARY_SHARE_ROOT)
 MUSICBRAINZ_USER_AGENT = "AudioMoverUI/1.0.0 (https://github.com/velkrosmaak/audio-mover-ui)"
 
 SUPPORTED_EXTENSIONS = {
