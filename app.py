@@ -4,8 +4,10 @@ import re
 import shutil
 import threading
 import uuid
+import time
 from pathlib import Path
 from typing import Any
+import requests
 
 from flask import Flask, jsonify, render_template, request
 from mutagen import File as MutagenFile
@@ -19,8 +21,9 @@ from mutagen.oggvorbis import OggVorbis
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 512
 app.logger.setLevel(logging.DEBUG)
-REMOTE_SHARE_ROOT = Path("/music/library/share/")
-LIBRARY_SHARE_ROOT = Path("/music/downloads/directory")
+REMOTE_SHARE_ROOT = Path("/Volumes/Media/downloads/complete/lidarr-music/")
+LIBRARY_SHARE_ROOT = Path("/Volumes/Media/music")
+MUSICBRAINZ_USER_AGENT = "AudioMoverUI/1.0.0 (https://github.com/velkrosmaak/audio-mover-ui)"
 
 SUPPORTED_EXTENSIONS = {
     ".aac",
@@ -328,6 +331,96 @@ def save_disc_and_track_values(audio_path: Path, disc_number: int, disc_total: i
     raise ValueError(f"Disc/track editing is not supported for: {audio_path.suffix.lower()}")
 
 
+def fetch_musicbrainz_tracks(artist: str, album: str) -> list[dict[str, Any]]:
+    """Queries MusicBrainz for the tracklist of a given album and artist."""
+    if not artist or not album or artist == "Unknown Artist" or album == "Unknown Album":
+        return []
+
+    try:
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        search_url = "https://musicbrainz.org/ws/2/release/"
+        params = {"query": f'artist:"{artist}" AND release:"{album}"', "fmt": "json"}
+        
+        response = requests.get(search_url, params=params, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        if not data.get("releases"):
+            return []
+            
+        # Take the best match release ID
+        release_id = data["releases"][0]["id"]
+        lookup_url = f"https://musicbrainz.org/ws/2/release/{release_id}"
+        params = {"inc": "recordings", "fmt": "json"}
+        
+        # MusicBrainz prefers a 1s delay between requests to avoid rate limiting
+        time.sleep(1.0)
+        response = requests.get(lookup_url, params=params, headers=headers, timeout=10)
+        response.raise_for_status()
+        release_data = response.json()
+        
+        tracks = []
+        for media in release_data.get("media", []):
+            disc_number = media.get("position", 1)
+            for track in media.get("tracks", []):
+                tracks.append({
+                    "title": track.get("title"),
+                    "track_number": safe_int(track.get("position")),
+                    "disc_number": safe_int(disc_number),
+                    "duration_seconds": (track.get("length") or 0) / 1000,
+                })
+        return tracks
+    except Exception as exc:
+        app.logger.warning("MusicBrainz lookup failed for %s - %s: %s", artist, album, exc)
+        return []
+
+
+def inject_missing_tracks(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Identifies missing tracks in an album by comparing against MusicBrainz."""
+    if not items:
+        return []
+
+    album_groups = {}
+    for item in items:
+        key = item.get("album_group_key")
+        if key not in album_groups:
+            album_groups[key] = []
+        album_groups[key].append(item)
+
+    all_items = list(items)
+    for key, group_items in album_groups.items():
+        # Use metadata from the first file in the group to perform the search
+        artist = group_items[0].get("album_artist") or group_items[0].get("artist")
+        album = group_items[0].get("album")
+        
+        mb_tracks = fetch_musicbrainz_tracks(artist, album)
+        if not mb_tracks:
+            for it in group_items:
+                it["mb_lookup_failed"] = True
+            continue
+
+        local_map = {(it.get("disc_number"), it.get("track_number")) for it in group_items}
+        for mb_t in mb_tracks:
+            if (mb_t["disc_number"], mb_t["track_number"]) not in local_map:
+                all_items.append({
+                    "file_name": "[MISSING]",
+                    "relative_path": "Not found in directory",
+                    "title": mb_t["title"],
+                    "artist": artist,
+                    "album": album,
+                    "album_artist": artist,
+                    "disc_number": mb_t["disc_number"],
+                    "disc": str(mb_t["disc_number"]),
+                    "track_number": mb_t["track_number"],
+                    "track": str(mb_t["track_number"]),
+                    "duration_seconds": mb_t["duration_seconds"],
+                    "is_missing": True,
+                    "album_dir_relative": group_items[0].get("album_dir_relative"),
+                    "album_group_key": key,
+                })
+    return sort_metadata_rows(all_items)
+
+
 def sort_metadata_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         rows,
@@ -581,6 +674,7 @@ def run_analysis_job(job_id: str, directory: Path, source_label: str, source_rel
           return
 
         items = collect_metadata_rows(job_id, directory, audio_files)
+        items = inject_missing_tracks(items)
         update_job(
             job_id,
             status="completed",
@@ -633,6 +727,7 @@ def run_album_artist_update_job(job_id: str, directory: Path, source_label: str,
                 append_job_error(job_id, f"{audio_file.name}: {type(exc).__name__}: {exc}")
 
         items = collect_metadata_rows(job_id, directory, audio_files, start_index=len(audio_files), total_override=total_steps)
+        items = inject_missing_tracks(items)
         update_job(
             job_id,
             status="completed",
@@ -686,6 +781,7 @@ def run_album_title_update_job(job_id: str, directory: Path, source_label: str, 
                 append_job_error(job_id, f"{audio_file.name}: {type(exc).__name__}: {exc}")
 
         items = collect_metadata_rows(job_id, directory, audio_files, start_index=len(audio_files), total_override=total_steps)
+        items = inject_missing_tracks(items)
         update_job(
             job_id,
             status="completed",
@@ -887,6 +983,7 @@ def run_move_album_job(
                 progress_total=max(len(remaining_files), 1),
             )
             items = collect_metadata_rows(job_id, source_root_directory, remaining_files, start_index=0, total_override=max(len(remaining_files), 1))
+            items = inject_missing_tracks(items)
             editable = bool(source_root_directory.exists())
         else:
             items = []

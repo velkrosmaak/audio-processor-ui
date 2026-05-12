@@ -131,6 +131,11 @@ function renderTable(items, sourceLabel) {
     group.tracks.forEach((item, trackIndex) => {
       const row = document.createElement("tr");
       row.className = trackIndex === 0 ? "album-group-start" : "";
+      if (item.is_missing) {
+        row.classList.add("track-missing");
+        row.style.textDecoration = "line-through";
+        row.style.opacity = "0.5";
+      }
 
       if (trackIndex === 0) {
         const artworkCell = document.createElement("td");
@@ -188,6 +193,16 @@ function renderTable(items, sourceLabel) {
         });
 
         albumCell.append(albumName, albumArtistMeta, moveButton);
+
+        if (group.tracks[0] && group.tracks[0].mb_lookup_failed) {
+          const mbWarning = document.createElement("div");
+          mbWarning.className = "album-meta";
+          mbWarning.style.color = "#8c1c13";
+          mbWarning.style.marginTop = "8px";
+          mbWarning.textContent = "⚠️ Album not found on MusicBrainz. Completeness cannot be verified.";
+          albumCell.appendChild(mbWarning);
+        }
+
         row.appendChild(albumCell);
       }
 
