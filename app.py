@@ -647,6 +647,48 @@ def collect_metadata_rows(job_id: str, directory: Path, audio_files: list[Path],
     return sort_metadata_rows(rows)
 
 
+def run_completeness_scan_job(job_id: str, relative_path: str) -> None:
+    try:
+        directory = resolve_remote_browser_path(relative_path)
+        subdirs = [d for d in sorted(directory.iterdir()) if d.is_dir()]
+        total = len(subdirs)
+        completeness_map = {}
+
+        update_job(job_id, progress_total=total, progress_current=0, message="Starting completeness scan...")
+
+        for index, subdir in enumerate(subdirs, start=1):
+            subdir_relative = str(subdir.relative_to(resolve_remote_share_root()))
+            update_job(job_id, progress_current=index, message=f"Checking: {subdir.name}")
+            
+            audio_files = list_audio_files(subdir)
+            if not audio_files:
+                completeness_map[subdir_relative] = "unknown"
+                continue
+
+            try:
+                # Extract metadata from the first file to identify the album
+                meta = extract_metadata(audio_files[0], subdir.parent)
+                artist = meta.get("album_artist") or meta.get("artist")
+                album = meta.get("album")
+                
+                mb_tracks = fetch_musicbrainz_tracks(artist, album)
+                if not mb_tracks:
+                    completeness_map[subdir_relative] = "unknown"
+                else:
+                    is_complete = len(audio_files) >= len(mb_tracks)
+                    completeness_map[subdir_relative] = "complete" if is_complete else "incomplete"
+            except Exception:
+                completeness_map[subdir_relative] = "error"
+
+            # Update job with intermediate results so the UI can update live
+            update_job(job_id, completeness_results=completeness_map)
+
+        update_job(job_id, status="completed", phase="completed", message="Scan complete.")
+    except Exception as exc:
+        app.logger.exception("Completeness scan failed")
+        update_job(job_id, status="failed", phase="failed", message=str(exc))
+
+
 def run_analysis_job(job_id: str, directory: Path, source_label: str, source_relative_path: str) -> None:
     try:
         app.logger.info("Starting analysis job %s for %s", job_id, directory)
@@ -1036,6 +1078,26 @@ def remote_browser():
         return jsonify({"error": f"Unable to browse remote share: {exc}"}), 500
 
     return jsonify(payload)
+
+
+@app.post("/api/scan-completeness")
+def scan_completeness():
+    payload = request.get_json(silent=True) or {}
+    relative_path = (payload.get("relative_path") or "").strip()
+    
+    try:
+        directory = resolve_remote_browser_path(relative_path)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    if not directory.exists() or not directory.is_dir():
+        return jsonify({"error": "Directory not found"}), 404
+
+    job_id = create_job("completeness_scan", relative_path, f"Scan: {directory.name}")
+    # This job tracks completeness results in its state
+    launch_background_job(run_completeness_scan_job, job_id, relative_path)
+    
+    return jsonify({"job_id": job_id})
 
 
 @app.post("/api/process-remote-folder")

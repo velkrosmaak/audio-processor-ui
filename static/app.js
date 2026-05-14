@@ -8,6 +8,7 @@ const activityPhase = document.getElementById("activity-phase");
 const activityProgressBar = document.getElementById("activity-progress-bar");
 const activityMessage = document.getElementById("activity-message");
 const activityCount = document.getElementById("activity-count");
+const browserScanButton = document.getElementById("browser-scan-button");
 const activityReports = document.getElementById("activity-reports");
 const activityErrors = document.getElementById("activity-errors");
 const statusMessage = document.getElementById("status-message");
@@ -32,6 +33,7 @@ const state = {
   currentJobId: "",
   pollTimer: null,
   processedFolders: new Set(),
+  completeness: {}, // Map of relative_path -> "complete" | "incomplete" | "unknown"
 };
 
 function setStatus(message, isError = false) {
@@ -258,6 +260,12 @@ function renderActivity(job) {
   activityCount.textContent = `${job.progress_current || 0} / ${job.progress_total || 0}`;
   activityProgressBar.style.width = `${job.progress_percent || 0}%`;
 
+  if (job.job_type === "completeness_scan" && job.completeness_results) {
+    // Update local state with partial results during scanning
+    Object.assign(state.completeness, job.completeness_results);
+    renderBrowserEntries(state.lastEntries || []);
+  }
+
   if (job.reports && job.reports.length) {
     activityReports.hidden = false;
     activityReports.innerHTML = "";
@@ -320,6 +328,8 @@ async function pollJob(jobId) {
       setStatus(`Updated album title on ${payload.updated_count || 0} audio file${payload.updated_count === 1 ? "" : "s"}.`);
     } else if (payload.job_type === "move_album") {
       setStatus(payload.message || "Album moved to library.");
+      // Refresh browser to remove the moved folder
+      loadRemoteBrowser(state.browserPath);
     } else {
       setStatus(payload.message || "Analysis complete.");
     }
@@ -359,6 +369,22 @@ function beginJobTracking(jobId, statusText) {
     stopJobPolling();
     setStatus(error.message, true);
   });
+}
+
+async function scanBrowserCompleteness() {
+  const response = await fetch("/api/scan-completeness", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ relative_path: state.browserPath }),
+  });
+
+  const payload = await parseResponse(response);
+  beginJobTracking(
+    payload.job_id,
+    "Checking completeness of subfolders via MusicBrainz..."
+  );
 }
 
 async function processRemoteFolder(relativePath, folderName) {
@@ -469,10 +495,18 @@ function renderBrowserEntries(entries) {
       row.classList.add("browser-entry-processed");
     }
 
+    const status = state.completeness[entry.relative_path];
+    let statusIcon = "";
+    if (status === "incomplete") {
+      statusIcon = '<span title="Missing tracks detected" style="color: #8c1c13; margin-right: 8px;">⚠️</span>';
+    } else if (status === "complete") {
+      statusIcon = '<span title="Album is complete" style="color: #2d5a27; margin-right: 8px;">✓</span>';
+    }
+
     const info = document.createElement("div");
     const name = document.createElement("p");
     name.className = "browser-entry-name";
-    name.textContent = entry.name;
+    name.innerHTML = `${statusIcon}${entry.name}`;
 
     const meta = document.createElement("div");
     meta.className = "browser-meta";
@@ -529,8 +563,10 @@ async function loadRemoteBrowser(relativePath = "") {
 
   state.browserPath = payload.current_relative_path || "";
   state.browserParentPath = payload.parent_relative_path || "";
+  state.lastEntries = payload.entries || [];
   browserPath.textContent = payload.current_display_path;
   browserUpButton.disabled = state.browserPath === "";
+  browserScanButton.disabled = !payload.entries.length;
   renderBrowserEntries(payload.entries || []);
   setBrowserStatus(`Showing ${payload.entries.length} folder${payload.entries.length === 1 ? "" : "s"}.`);
 }
@@ -556,6 +592,14 @@ browserUpButton.addEventListener("click", async () => {
     await loadRemoteBrowser(state.browserParentPath);
   } catch (error) {
     setBrowserStatus(error.message, true);
+  }
+});
+
+browserScanButton.addEventListener("click", async () => {
+  try {
+    await scanBrowserCompleteness();
+  } catch (error) {
+    setStatus(error.message, true);
   }
 });
 
