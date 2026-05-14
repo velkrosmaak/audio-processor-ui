@@ -320,6 +320,10 @@ async function pollJob(jobId) {
 
   if (payload.status === "completed") {
     stopJobPolling();
+    if (payload.job_type === "browser_list") {
+      handleBrowserPayload(payload.browser_payload);
+      return;
+    }
     updateBulkEditor(payload);
     renderTable(payload.items || [], payload.source || "Processed folder");
     if (payload.job_type === "album_artist_update") {
@@ -555,12 +559,7 @@ function renderBrowserEntries(entries) {
   browserList.appendChild(fragment);
 }
 
-async function loadRemoteBrowser(relativePath = "") {
-  setBrowserStatus("Fetching folders...");
-  const query = relativePath ? `?path=${encodeURIComponent(relativePath)}` : "";
-  const response = await fetch(`/api/remote-browser${query}`);
-  const payload = await parseResponse(response);
-
+function handleBrowserPayload(payload) {
   state.browserPath = payload.current_relative_path || "";
   state.browserParentPath = payload.parent_relative_path || "";
   state.lastEntries = payload.entries || [];
@@ -569,6 +568,17 @@ async function loadRemoteBrowser(relativePath = "") {
   browserScanButton.disabled = !payload.entries.length;
   renderBrowserEntries(payload.entries || []);
   setBrowserStatus(`Showing ${payload.entries.length} folder${payload.entries.length === 1 ? "" : "s"}.`);
+}
+
+async function loadRemoteBrowser(relativePath = "") {
+  setBrowserStatus("Queueing folder list...");
+  const query = relativePath ? `?path=${encodeURIComponent(relativePath)}` : "";
+  const response = await fetch(`/api/remote-browser${query}`);
+  const payload = await parseResponse(response);
+
+  if (payload.job_id) {
+    beginJobTracking(payload.job_id, `Fetching contents of ${relativePath || "Root"}...`);
+  }
 }
 
 updateAlbumArtistButton.addEventListener("click", async () => {

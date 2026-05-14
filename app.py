@@ -538,38 +538,64 @@ def list_audio_files(directory: Path) -> list[Path]:
     return sorted(path for path in directory.rglob("*") if is_audio_file(path))
 
 
-def list_remote_directories(relative_path: str = "") -> dict[str, Any]:
-    current_path = resolve_remote_browser_path(relative_path)
-    root = resolve_remote_share_root()
-    if not current_path.exists() or not current_path.is_dir():
-        raise FileNotFoundError(f"Directory not found: {current_path}")
+def run_browser_list_job(job_id: str, relative_path: str) -> None:
+    try:
+        app.logger.debug("[%s] Starting browser list job for relative_path='%s'", job_id, relative_path)
+        current_path = resolve_remote_browser_path(relative_path)
+        root = resolve_remote_share_root()
 
-    entries = []
-    for child in sorted(current_path.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
-        if not child.is_dir():
-            continue
-        child_relative = str(child.relative_to(root))
-        entries.append(
-            {
-                "name": child.name,
-                "relative_path": child_relative,
-                "audio_file_count": len(list_audio_files(child)),
-                "subdirectory_count": len([path for path in child.iterdir() if path.is_dir()]),
-            }
-        )
+        if not current_path.exists() or not current_path.is_dir():
+            raise FileNotFoundError(f"Directory not found: {current_path}")
 
-    current_relative = "" if current_path == root else str(current_path.relative_to(root))
-    parent_relative = ""
-    if current_path != root:
-        parent_relative = str(current_path.parent.relative_to(root)) if current_path.parent != root else ""
+        # Gather immediate subdirectories
+        subdirs = sorted([c for c in current_path.iterdir() if c.is_dir()], key=lambda item: item.name.lower())
+        total = len(subdirs)
 
-    return {
-        "root": str(root),
-        "current_relative_path": current_relative,
-        "current_display_path": str(current_path),
-        "parent_relative_path": parent_relative,
-        "entries": entries,
-    }
+        update_job(job_id, progress_total=total, progress_current=0, message=f"Listing folders in {current_path.name}...")
+
+        entries = []
+        for index, child in enumerate(subdirs, start=1):
+            app.logger.debug("[%s] Scanning subdirectory %d/%d: %s", job_id, index, total, child.name)
+            update_job(job_id, progress_current=index, message=f"Scanning: {child.name}")
+
+            child_relative = str(child.relative_to(root))
+            
+            # Diagnostic logging for slow recursive file counts
+            start_ts = time.time()
+            audio_count = len(list_audio_files(child))
+            subdir_count = len([path for path in child.iterdir() if path.is_dir()])
+            duration = time.time() - start_ts
+            
+            if duration > 0.5:
+                app.logger.debug("[%s] SLOW SCAN: '%s' took %.2fs", job_id, child.name, duration)
+
+            entries.append(
+                {
+                    "name": child.name,
+                    "relative_path": child_relative,
+                    "audio_file_count": audio_count,
+                    "subdirectory_count": subdir_count,
+                }
+            )
+
+        current_relative = "" if current_path == root else str(current_path.relative_to(root))
+        parent_relative = ""
+        if current_path != root:
+            parent_relative = str(current_path.parent.relative_to(root)) if current_path.parent != root else ""
+
+        browser_payload = {
+            "root": str(root),
+            "current_relative_path": current_relative,
+            "current_display_path": str(current_path),
+            "parent_relative_path": parent_relative,
+            "entries": entries,
+        }
+
+        update_job(job_id, status="completed", phase="completed", message="Listing complete.", browser_payload=browser_payload)
+        app.logger.debug("[%s] Browser list job finished successfully", job_id)
+    except Exception as exc:
+        app.logger.exception("[%s] Browser list job failed", job_id)
+        update_job(job_id, status="failed", phase="failed", message=str(exc))
 
 
 def create_job(job_type: str, source_relative_path: str, source_label: str) -> str:
@@ -593,6 +619,7 @@ def create_job(job_type: str, source_relative_path: str, source_label: str) -> s
             "reports": [],
             "updated_count": 0,
             "moved_album_dir_relative": "",
+            "browser_payload": None,
         }
     return job_id
 
@@ -1065,19 +1092,16 @@ def index() -> str:
 @app.get("/api/remote-browser")
 def remote_browser():
     relative_path = (request.args.get("path") or "").strip()
-    app.logger.info("Browsing remote share path=%s", relative_path)
+    app.logger.info("Queueing remote browser listing for path=%s", relative_path)
 
     try:
-        payload = list_remote_directories(relative_path)
+        resolve_remote_browser_path(relative_path)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    except FileNotFoundError as exc:
-        return jsonify({"error": str(exc)}), 404
-    except Exception as exc:
-        app.logger.exception("Unable to browse remote share")
-        return jsonify({"error": f"Unable to browse remote share: {exc}"}), 500
 
-    return jsonify(payload)
+    job_id = create_job("browser_list", relative_path, f"Browse: {relative_path or 'Root'}")
+    launch_background_job(run_browser_list_job, job_id, relative_path)
+    return jsonify({"job_id": job_id})
 
 
 @app.post("/api/scan-completeness")
