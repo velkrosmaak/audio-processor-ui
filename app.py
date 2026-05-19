@@ -443,9 +443,35 @@ def inject_missing_tracks(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 it["mb_lookup_failed"] = True
             continue
 
-        local_map = {(it.get("disc_number"), it.get("track_number")) for it in group_items}
+        # MusicBrainz usually reports single-disc releases as disc 1, while local tags
+        # often omit disc numbers entirely. Normalize missing/None local disc tags to 1
+        # when the release appears to be single-disc, so complete albums do not get every
+        # track duplicated as "[MISSING]".
+        local_disc_numbers = {it.get("disc_number") for it in group_items if it.get("disc_number") is not None}
+        mb_disc_numbers = {track.get("disc_number") for track in mb_tracks if track.get("disc_number") is not None}
+        treat_missing_disc_as_one = len(local_disc_numbers) <= 1 and len(mb_disc_numbers) <= 1
+
+        local_map = {
+            (
+                (it.get("disc_number") if it.get("disc_number") is not None else 1) if treat_missing_disc_as_one else it.get("disc_number"),
+                it.get("track_number"),
+            )
+            for it in group_items
+        }
+        local_title_map = {
+            (
+                (it.get("disc_number") if it.get("disc_number") is not None else 1) if treat_missing_disc_as_one else it.get("disc_number"),
+                (it.get("title") or "").strip().casefold(),
+            )
+            for it in group_items
+            if it.get("title")
+        }
         for mb_t in mb_tracks:
-            if (mb_t["disc_number"], mb_t["track_number"]) not in local_map:
+            normalized_mb_disc = (mb_t["disc_number"] if mb_t["disc_number"] is not None else 1) if treat_missing_disc_as_one else mb_t["disc_number"]
+            track_key = (normalized_mb_disc, mb_t["track_number"])
+            title_key = (normalized_mb_disc, (mb_t["title"] or "").strip().casefold())
+
+            if track_key not in local_map and title_key not in local_title_map:
                 all_items.append({
                     "file_name": "[MISSING]",
                     "relative_path": "Not found in directory",
@@ -454,8 +480,8 @@ def inject_missing_tracks(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "artist": artist,
                     "album": album,
                     "album_artist": artist,
-                    "disc_number": mb_t["disc_number"],
-                    "disc": str(mb_t["disc_number"]),
+                    "disc_number": normalized_mb_disc,
+                    "disc": str(normalized_mb_disc),
                     "track_number": mb_t["track_number"],
                     "track": str(mb_t["track_number"]),
                     "duration_seconds": mb_t["duration_seconds"],
