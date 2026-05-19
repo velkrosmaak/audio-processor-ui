@@ -32,6 +32,9 @@ const state = {
   browserParentPath: "",
   currentJobId: "",
   pollTimer: null,
+  completenessJobId: "",
+  completenessPollTimer: null,
+  completenessScanRunning: false,
   processedFolders: new Set(),
   completeness: {}, // Map of relative_path -> "complete" | "incomplete" | "unknown"
 };
@@ -308,6 +311,19 @@ function stopJobPolling() {
   }
 }
 
+function stopCompletenessPolling() {
+  if (state.completenessPollTimer) {
+    clearTimeout(state.completenessPollTimer);
+    state.completenessPollTimer = null;
+  }
+  state.completenessJobId = "";
+  state.completenessScanRunning = false;
+  if (browserScanButton) {
+    browserScanButton.disabled = !state.lastEntries?.length;
+    browserScanButton.textContent = "Check Completeness";
+  }
+}
+
 function focusActivityPanel() {
   activityPanel.hidden = false;
   activityPanel.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -366,6 +382,39 @@ async function pollJob(jobId) {
   }, 700);
 }
 
+async function pollCompletenessJob(jobId) {
+  const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+  const payload = await parseResponse(response);
+
+  if (payload.completeness_results) {
+    Object.assign(state.completeness, payload.completeness_results);
+    renderBrowserEntries(state.lastEntries || []);
+  }
+
+  if (payload.status === "completed") {
+    stopCompletenessPolling();
+    setBrowserStatus("Completeness check finished.");
+    return;
+  }
+
+  if (payload.status === "failed") {
+    stopCompletenessPolling();
+    setBrowserStatus(payload.message || "Completeness check failed.", true);
+    return;
+  }
+
+  const total = payload.progress_total || 0;
+  const current = payload.progress_current || 0;
+  setBrowserStatus(`Checking completeness in background... ${current}/${total}`);
+
+  state.completenessPollTimer = window.setTimeout(() => {
+    pollCompletenessJob(jobId).catch((error) => {
+      stopCompletenessPolling();
+      setBrowserStatus(error.message, true);
+    });
+  }, 700);
+}
+
 function beginJobTracking(jobId, statusText) {
   stopJobPolling();
   state.currentJobId = jobId;
@@ -388,6 +437,11 @@ function beginJobTracking(jobId, statusText) {
 }
 
 async function scanBrowserCompleteness() {
+  if (state.completenessScanRunning) {
+    setBrowserStatus("Completeness check is already running.");
+    return;
+  }
+
   const response = await fetch("/api/scan-completeness", {
     method: "POST",
     headers: {
@@ -397,10 +451,17 @@ async function scanBrowserCompleteness() {
   });
 
   const payload = await parseResponse(response);
-  beginJobTracking(
-    payload.job_id,
-    "Checking completeness of subfolders via MusicBrainz..."
-  );
+  state.completenessJobId = payload.job_id;
+  state.completenessScanRunning = true;
+  if (browserScanButton) {
+    browserScanButton.disabled = true;
+    browserScanButton.textContent = "Checking...";
+  }
+  setBrowserStatus("Checking completeness in background...");
+  pollCompletenessJob(payload.job_id).catch((error) => {
+    stopCompletenessPolling();
+    setBrowserStatus(error.message, true);
+  });
 }
 
 async function processRemoteFolder(relativePath, folderName) {
@@ -580,7 +641,8 @@ function handleBrowserPayload(payload) {
     browserUpButton.disabled = state.browserPath === "";
   }
   if (browserScanButton) {
-    browserScanButton.disabled = !payload.entries.length;
+    browserScanButton.disabled = state.completenessScanRunning || !payload.entries.length;
+    browserScanButton.textContent = state.completenessScanRunning ? "Checking..." : "Check Completeness";
   }
   renderBrowserEntries(payload.entries || []);
   setBrowserStatus(`Showing ${payload.entries.length} folder${payload.entries.length === 1 ? "" : "s"}.`);
