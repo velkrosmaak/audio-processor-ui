@@ -1,4 +1,5 @@
 import base64
+import sys
 import logging
 import re
 import shutil
@@ -19,9 +20,18 @@ from mutagen.oggopus import OggOpus
 from mutagen.oggvorbis import OggVorbis
 
 
+# Explicitly configure logging to ensure output hits the console immediately
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 512
-app.logger.setLevel(logging.DEBUG)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+app.logger.setLevel(logging.INFO)
+
+# Attach the configured handlers to the Flask app logger
+for handler in logging.root.handlers:
+    app.logger.addHandler(handler)
+app.logger.setLevel(logging.INFO)
+
 REMOTE_SHARE_ROOT = Path(config.REMOTE_SHARE_ROOT)
 LIBRARY_SHARE_ROOT = Path(config.LIBRARY_SHARE_ROOT)
 MUSICBRAINZ_USER_AGENT = "AudioMoverUI/1.0.0 (https://github.com/velkrosmaak/audio-mover-ui)"
@@ -332,12 +342,13 @@ def save_disc_and_track_values(audio_path: Path, disc_number: int, disc_total: i
     raise ValueError(f"Disc/track editing is not supported for: {audio_path.suffix.lower()}")
 
 
-def fetch_musicbrainz_tracks(artist: str, album: str) -> list[dict[str, Any]]:
+def fetch_musicbrainz_tracks(artist: str, album: str) -> tuple[list[dict[str, Any]], str | None]:
     """Queries MusicBrainz for the tracklist of a given album and artist."""
     if not artist or not album or artist == "Unknown Artist" or album == "Unknown Album":
-        return []
+        return [], None
 
     try:
+        app.logger.info("Searching MusicBrainz: artist='%s' album='%s'", artist, album)
         headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
         search_url = "https://musicbrainz.org/ws/2/release/"
         params = {"query": f'artist:"{artist}" AND release:"{album}"', "fmt": "json"}
@@ -347,7 +358,7 @@ def fetch_musicbrainz_tracks(artist: str, album: str) -> list[dict[str, Any]]:
         data = response.json()
         
         if not data.get("releases"):
-            return []
+            return [], None
             
         # Take the best match release ID
         release_id = data["releases"][0]["id"]
@@ -357,6 +368,7 @@ def fetch_musicbrainz_tracks(artist: str, album: str) -> list[dict[str, Any]]:
         # MusicBrainz prefers a 1s delay between requests to avoid rate limiting
         time.sleep(1.0)
         response = requests.get(lookup_url, params=params, headers=headers, timeout=10)
+        app.logger.info("MusicBrainz API Response: %s", response.status_code)
         response.raise_for_status()
         release_data = response.json()
         
@@ -370,10 +382,40 @@ def fetch_musicbrainz_tracks(artist: str, album: str) -> list[dict[str, Any]]:
                     "disc_number": safe_int(disc_number),
                     "duration_seconds": (track.get("length") or 0) / 1000,
                 })
-        return tracks
+        return tracks, release_id
     except Exception as exc:
         app.logger.warning("MusicBrainz lookup failed for %s - %s: %s", artist, album, exc)
-        return []
+        return [], None
+
+
+def download_album_artwork(directory: Path, mbid: str | None) -> bool:
+    """Downloads artwork to the directory if missing, following Plex/Kodi standards."""
+    # Standard filenames recognized by Plex/Kodi
+    standard_names = ["cover.jpg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png"]
+    for name in standard_names:
+        if (directory / name).exists():
+            app.logger.info("Artwork already exists in %s", directory.name)
+            return True
+
+    if not mbid:
+        return False
+
+    try:
+        app.logger.info("Attempting to download artwork for MBID: %s", mbid)
+        # Cover Art Archive front image URL
+        caa_url = f"https://coverartarchive.org/release/{mbid}/front"
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        
+        response = requests.get(caa_url, headers=headers, timeout=15, allow_redirects=True)
+        response.raise_for_status()
+        
+        target_file = directory / "cover.jpg"
+        target_file.write_bytes(response.content)
+        app.logger.info("Successfully saved artwork to %s", target_file.name)
+        return True
+    except Exception as exc:
+        app.logger.warning("Failed to download artwork for %s: %s", mbid, exc)
+        return False
 
 
 def inject_missing_tracks(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -394,7 +436,8 @@ def inject_missing_tracks(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         artist = group_items[0].get("album_artist") or group_items[0].get("artist")
         album = group_items[0].get("album")
         
-        mb_tracks = fetch_musicbrainz_tracks(artist, album)
+        app.logger.info("Verifying completeness via MusicBrainz: %s - %s", artist, album)
+        mb_tracks, mb_id = fetch_musicbrainz_tracks(artist, album)
         if not mb_tracks:
             for it in group_items:
                 it["mb_lookup_failed"] = True
@@ -407,6 +450,7 @@ def inject_missing_tracks(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "file_name": "[MISSING]",
                     "relative_path": "Not found in directory",
                     "title": mb_t["title"],
+                    "musicbrainz_release_id": mb_id,
                     "artist": artist,
                     "album": album,
                     "album_artist": artist,
@@ -517,12 +561,12 @@ def resolve_library_share_root() -> Path:
 
 
 def resolve_remote_browser_path(relative_path: str = "") -> Path:
-    root = resolve_remote_share_root()
+    root = REMOTE_SHARE_ROOT.expanduser().resolve()
     if not relative_path:
         return root
 
     candidate = (root / relative_path).resolve()
-    if candidate != root and root not in candidate.parents:
+    if root not in candidate.parents and candidate != root:
         raise ValueError("Requested path is outside the configured remote share root.")
     return candidate
 
@@ -534,40 +578,53 @@ def resolve_library_target_path(album_artist: str, album: str) -> Path:
     return root / artist_dir / album_dir
 
 
-def list_audio_files(directory: Path) -> list[Path]:
-    return sorted(path for path in directory.rglob("*") if is_audio_file(path))
+def list_audio_files(directory: Path, recursive: bool = True) -> list[Path]:
+    iterator = directory.rglob("*") if recursive else directory.iterdir()
+    return sorted(path for path in iterator if is_audio_file(path))
 
 
 def run_browser_list_job(job_id: str, relative_path: str) -> None:
     try:
-        app.logger.debug("[%s] Starting browser list job for relative_path='%s'", job_id, relative_path)
+        app.logger.info("[%s] Thread started: Listing directory for '%s'", job_id, relative_path)
+        
         current_path = resolve_remote_browser_path(relative_path)
-        root = resolve_remote_share_root()
+        root = resolve_remote_browser_path("")
 
         if not current_path.exists() or not current_path.is_dir():
             raise FileNotFoundError(f"Directory not found: {current_path}")
 
-        # Gather immediate subdirectories
-        subdirs = sorted([c for c in current_path.iterdir() if c.is_dir()], key=lambda item: item.name.lower())
+        app.logger.info("[%s] Iterating directory: %s", job_id, current_path)
+        # Use a single pass to gather subdirectories to minimize network overhead
+        subdirs = []
+        for item in current_path.iterdir():
+            if item.is_dir() and not item.name.startswith("."):
+                subdirs.append(item)
+        
+        subdirs.sort(key=lambda x: x.name.lower())
         total = len(subdirs)
+        app.logger.info("[%s] Found %d subdirectories to scan", job_id, total)
 
         update_job(job_id, progress_total=total, progress_current=0, message=f"Listing folders in {current_path.name}...")
 
         entries = []
         for index, child in enumerate(subdirs, start=1):
-            app.logger.debug("[%s] Scanning subdirectory %d/%d: %s", job_id, index, total, child.name)
             update_job(job_id, progress_current=index, message=f"Scanning: {child.name}")
-
             child_relative = str(child.relative_to(root))
-            
-            # Diagnostic logging for slow recursive file counts
-            start_ts = time.time()
-            audio_count = len(list_audio_files(child))
-            subdir_count = len([path for path in child.iterdir() if path.is_dir()])
-            duration = time.time() - start_ts
-            
-            if duration > 0.5:
-                app.logger.debug("[%s] SLOW SCAN: '%s' took %.2fs", job_id, child.name, duration)
+
+            # Perform a fast, non-recursive count of immediate children
+            # This loop can be a performance bottleneck if there are many subdirectories
+            # and each subdirectory contains a large number of files or subdirectories.
+            audio_count = 0
+            subdir_count = 0
+            try:
+                for item in child.iterdir(): # This line is the core of the potential performance issue
+                    if item.is_dir():
+                        if not item.name.startswith("."):
+                            subdir_count += 1
+                    elif is_audio_file(item):
+                        audio_count += 1
+            except Exception as exc:
+                app.logger.warning("[%s] Could not scan subdirectory %s: %s", job_id, child.name, exc)
 
             entries.append(
                 {
@@ -666,6 +723,7 @@ def collect_metadata_rows(job_id: str, directory: Path, audio_files: list[Path],
             progress_total=total,
         )
         try:
+            app.logger.info("[%s] Reading metadata [%d/%d]: %s", job_id, current, total, audio_file.name)
             rows.append(extract_metadata(audio_file, directory))
         except Exception as exc:
             app.logger.exception("Failed to extract metadata for %s", audio_file)
@@ -685,9 +743,10 @@ def run_completeness_scan_job(job_id: str, relative_path: str) -> None:
 
         for index, subdir in enumerate(subdirs, start=1):
             subdir_relative = str(subdir.relative_to(resolve_remote_share_root()))
+            app.logger.info("[%s] [%d/%d] Completeness check: %s", job_id, index, total, subdir.name)
             update_job(job_id, progress_current=index, message=f"Checking: {subdir.name}")
             
-            audio_files = list_audio_files(subdir)
+            audio_files = list_audio_files(subdir, recursive=False)
             if not audio_files:
                 completeness_map[subdir_relative] = "unknown"
                 continue
@@ -698,7 +757,7 @@ def run_completeness_scan_job(job_id: str, relative_path: str) -> None:
                 artist = meta.get("album_artist") or meta.get("artist")
                 album = meta.get("album")
                 
-                mb_tracks = fetch_musicbrainz_tracks(artist, album)
+                mb_tracks, _ = fetch_musicbrainz_tracks(artist, album)
                 if not mb_tracks:
                     completeness_map[subdir_relative] = "unknown"
                 else:
@@ -789,6 +848,7 @@ def run_album_artist_update_job(job_id: str, directory: Path, source_label: str,
                 progress_current=index,
                 progress_total=total_steps,
             )
+            app.logger.info("[%s] Writing Album Artist [%d/%d]: %s", job_id, index, total_steps, audio_file.name)
             try:
                 save_album_artist(audio_file, album_artist)
                 updated_count += 1
@@ -843,6 +903,7 @@ def run_album_title_update_job(job_id: str, directory: Path, source_label: str, 
                 progress_current=index,
                 progress_total=total_steps,
             )
+            app.logger.info("[%s] Writing Album Title [%d/%d]: %s", job_id, index, total_steps, audio_file.name)
             try:
                 save_album_title(audio_file, album_title)
                 updated_count += 1
@@ -871,16 +932,42 @@ def run_album_title_update_job(job_id: str, directory: Path, source_label: str, 
 
 def rename_album_tracks(album_directory: Path, root_directory: Path, audio_files: list[Path], job_id: str, start_index: int, total_steps: int) -> None:
     rename_plan: list[tuple[Path, Path, Path]] = []
+    processed_sources = set()
 
     for index, audio_file in enumerate(audio_files, start=1):
+        try:
+            resolved_src = audio_file.resolve()
+        except Exception:
+            resolved_src = audio_file.absolute()
+
+        if resolved_src in processed_sources:
+            continue
+        processed_sources.add(resolved_src)
+
         metadata = extract_metadata(audio_file, root_directory)
-        track_number = metadata.get("track_number")
-        title = metadata.get("title") or audio_file.stem
-        padded_track = f"{track_number:02d}" if isinstance(track_number, int) else "00"
-        safe_title = sanitize_path_component(str(title), audio_file.stem)
+        track_num = metadata.get("track_number")
+        track_title = metadata.get("title") or audio_file.stem
+        padded_track = f"{track_num:02d}" if isinstance(track_num, int) else "00"
+        safe_title = sanitize_path_component(str(track_title), audio_file.stem)
         target_name = f"{padded_track} - {safe_title}{audio_file.suffix.lower()}"
         target_path = audio_file.with_name(target_name)
+
+        # If the file is already named exactly what it should be, skip it.
+        # Using .name ensures we still catch case-only changes (e.g. track.mp3 -> Track.mp3).
+        if audio_file.name == target_name:
+            continue
+
+        # Check for collisions with files NOT part of the current processing set
+        if target_path.exists():
+            try:
+                res_target = target_path.resolve()
+            except Exception:
+                res_target = target_path.absolute()
+            if res_target not in processed_sources:
+                raise FileExistsError(f"Target track already exists: {target_path.name}")
+
         temp_path = audio_file.with_name(f".apu-tmp-{uuid.uuid4().hex}{audio_file.suffix.lower()}")
+        rename_plan.append((audio_file, temp_path, target_path))
 
         update_job(
             job_id,
@@ -890,19 +977,19 @@ def rename_album_tracks(album_directory: Path, root_directory: Path, audio_files
             progress_current=start_index + index,
             progress_total=total_steps,
         )
+        app.logger.info("[%s] Renaming track [%d/%d]: %s", job_id, start_index + index, total_steps, audio_file.name)
 
-        if target_path.exists() and target_path not in audio_files:
-            raise FileExistsError(f"Target track already exists: {target_path.name}")
-
-        rename_plan.append((audio_file, temp_path, target_path))
-
+    # Phase 1: Rename everything to temporary names to avoid collisions during swaps
     for source_path, temp_path, target_path in rename_plan:
-        if source_path == target_path:
+        if not source_path.exists():
+            app.logger.warning("Source file missing before rename: %s", source_path)
             continue
         source_path.rename(temp_path)
 
+    # Phase 2: Rename from temporary to final target names
     for _, temp_path, target_path in rename_plan:
-        if temp_path == target_path:
+        if not temp_path.exists():
+            app.logger.error("Temporary file missing during rename phase: %s", temp_path)
             continue
         temp_path.rename(target_path)
 
@@ -965,6 +1052,7 @@ def merge_album_into_library(job_id: str, source_album_directory: Path, destinat
             progress_current=len(source_files) + 1 + index,
             progress_total=total_steps,
         )
+        app.logger.info("[%s] Comparing/Moving [%d/%d]: %s", job_id, len(source_files) + 1 + index, total_steps, source_file.name)
 
         relative_file = source_file.relative_to(source_album_directory)
         destination_file = destination_album_directory / relative_file
@@ -1011,6 +1099,11 @@ def run_move_album_job(
         album = sample_metadata.get("album") or album_directory.name
         destination = resolve_library_target_path(str(album_artist), str(album))
         destination.parent.mkdir(parents=True, exist_ok=True)
+
+        # Download artwork before moving if MBID is available
+        mb_tracks, mb_id = fetch_musicbrainz_tracks(str(album_artist), str(album))
+        if mb_id:
+            download_album_artwork(album_directory, mb_id)
 
         total_steps = (len(audio_files) * 2) + 2
         update_job(

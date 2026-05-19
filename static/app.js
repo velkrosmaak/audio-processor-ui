@@ -316,10 +316,12 @@ function focusActivityPanel() {
 async function pollJob(jobId) {
   const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
   const payload = await parseResponse(response);
+  console.log(`[Job ${jobId}] Status: ${payload.status}, Progress: ${payload.progress_percent}%`);
   renderActivity(payload);
 
   if (payload.status === "completed") {
     stopJobPolling();
+    console.log(`[Job ${jobId}] Completed successfully.`);
     if (payload.job_type === "browser_list") {
       handleBrowserPayload(payload.browser_payload);
       return;
@@ -332,8 +334,18 @@ async function pollJob(jobId) {
       setStatus(`Updated album title on ${payload.updated_count || 0} audio file${payload.updated_count === 1 ? "" : "s"}.`);
     } else if (payload.job_type === "move_album") {
       setStatus(payload.message || "Album moved to library.");
-      // Refresh browser to remove the moved folder
-      loadRemoteBrowser(state.browserPath);
+      // Remove the moved folder from the UI listing locally instead of rescanning
+      const sourcePath = payload.source_relative_path || "";
+      const albumRel = payload.moved_album_dir_relative || "";
+      const fullMovedPath = (sourcePath && albumRel && albumRel !== ".")
+        ? `${sourcePath}/${albumRel}`
+        : (sourcePath || albumRel);
+
+      if (fullMovedPath && state.lastEntries) {
+        state.lastEntries = state.lastEntries.filter(entry => entry.relative_path !== fullMovedPath);
+        renderBrowserEntries(state.lastEntries);
+        setBrowserStatus(`Showing ${state.lastEntries.length} folder${state.lastEntries.length === 1 ? "" : "s"}.`);
+      }
     } else {
       setStatus(payload.message || "Analysis complete.");
     }
@@ -564,19 +576,26 @@ function handleBrowserPayload(payload) {
   state.browserParentPath = payload.parent_relative_path || "";
   state.lastEntries = payload.entries || [];
   browserPath.textContent = payload.current_display_path;
-  browserUpButton.disabled = state.browserPath === "";
-  browserScanButton.disabled = !payload.entries.length;
+  if (browserUpButton) {
+    browserUpButton.disabled = state.browserPath === "";
+  }
+  if (browserScanButton) {
+    browserScanButton.disabled = !payload.entries.length;
+  }
   renderBrowserEntries(payload.entries || []);
   setBrowserStatus(`Showing ${payload.entries.length} folder${payload.entries.length === 1 ? "" : "s"}.`);
 }
 
 async function loadRemoteBrowser(relativePath = "") {
+  console.log(`[Browser] Initiating load for path: "${relativePath || 'Root'}"`);
   setBrowserStatus("Queueing folder list...");
   const query = relativePath ? `?path=${encodeURIComponent(relativePath)}` : "";
   const response = await fetch(`/api/remote-browser${query}`);
+  console.log(`[Browser] Received response status: ${response.status}`);
   const payload = await parseResponse(response);
 
   if (payload.job_id) {
+    console.log(`[Browser] Job created: ${payload.job_id}. Starting poll...`);
     beginJobTracking(payload.job_id, `Fetching contents of ${relativePath || "Root"}...`);
   }
 }
@@ -605,13 +624,15 @@ browserUpButton.addEventListener("click", async () => {
   }
 });
 
-browserScanButton.addEventListener("click", async () => {
-  try {
-    await scanBrowserCompleteness();
-  } catch (error) {
-    setStatus(error.message, true);
-  }
-});
+if (browserScanButton) {
+  browserScanButton.addEventListener("click", async () => {
+    try {
+      await scanBrowserCompleteness();
+    } catch (error) {
+      setStatus(error.message, true);
+    }
+  });
+}
 
 loadRemoteBrowser().catch((error) => {
   setBrowserStatus(error.message, true);
